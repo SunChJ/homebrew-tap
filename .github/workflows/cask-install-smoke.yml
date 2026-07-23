@@ -1,0 +1,135 @@
+name: Cask install smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    paths:
+      - Casks/gloss.rb
+      - .github/workflows/cask-install-smoke.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cask-install-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    name: Cask install (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check runner architecture
+        run: |
+          set -euo pipefail
+          actual_architecture="$(uname -m)"
+          if [[ "$actual_architecture" != "$EXPECTED_ARCHITECTURE" ]]; then
+            echo "Expected $EXPECTED_ARCHITECTURE runner; found $actual_architecture." >&2
+            exit 1
+          fi
+
+      - name: Detect Gloss cask
+        id: cask
+        run: |
+          set -euo pipefail
+          if [[ -f Casks/gloss.rb ]]; then
+            echo "present=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "present=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Casks/gloss.rb is not published yet; install smoke is skipped."
+          fi
+
+      - name: Install from checked-out tap
+        if: steps.cask.outputs.present == 'true' && github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          brew tap sunchj/tap "$GITHUB_WORKSPACE"
+          brew install --cask sunchj/tap/gloss
+
+      - name: Install with public Homebrew command
+        if: steps.cask.outputs.present == 'true' && github.event_name == 'push'
+        run: brew install --cask sunchj/tap/gloss
+
+      - name: Verify installed app
+        if: steps.cask.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          app_path="/Applications/Gloss.app"
+          main_binary="$app_path/Contents/MacOS/Gloss"
+
+          test -d "$app_path"
+          test -x "$main_binary"
+
+          mach_o_count=0
+          while IFS= read -r -d '' candidate; do
+            if file -b "$candidate" | grep -q "Mach-O"; then
+              lipo "$candidate" -verify_arch "$EXPECTED_ARCHITECTURE"
+              echo "$candidate: $(lipo "$candidate" -archs)"
+              mach_o_count=$((mach_o_count + 1))
+            fi
+          done < <(find "$app_path" -type f -print0)
+          if [[ "$mach_o_count" -eq 0 ]]; then
+            echo "No Mach-O files found in $app_path." >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          signature_details="$(codesign --display --verbose=4 "$app_path" 2>&1)"
+          echo "$signature_details"
+          if ! grep -q "^Signature=adhoc$" <<<"$signature_details"; then
+            echo "Gloss.app is not ad-hoc signed." >&2
+            exit 1
+          fi
+
+          extended_attributes="$(xattr -lr "$app_path" || true)"
+          if grep -q "com.apple.quarantine" <<<"$extended_attributes"; then
+            echo "Gloss.app still has a quarantine attribute." >&2
+            exit 1
+          fi
+
+          open -n "$app_path"
+          app_pid=""
+          for _ in {1..20}; do
+            app_pid="$(pgrep -f "$main_binary" | head -n 1 || true)"
+            [[ -n "$app_pid" ]] && break
+            sleep 1
+          done
+          if [[ -z "$app_pid" ]]; then
+            echo "Gloss.app did not launch." >&2
+            exit 1
+          fi
+          sleep 5
+          if ! kill -0 "$app_pid"; then
+            echo "Gloss.app exited during the launch smoke window." >&2
+            exit 1
+          fi
+
+      - name: Stop and uninstall Gloss
+        if: always() && steps.cask.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          pkill -x Gloss || true
+          if brew list --cask | grep -qx gloss; then
+            brew uninstall --cask --force sunchj/tap/gloss
+          fi
+          brew untap --force sunchj/tap || true
+          if [[ -e /Applications/Gloss.app ]]; then
+            echo "Gloss.app remains after uninstall." >&2
+            exit 1
+          fi

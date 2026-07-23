@@ -14,9 +14,9 @@ on:
         type: string
 
 permissions:
+  checks: write
   contents: write
   pull-requests: write
-  statuses: write
 
 concurrency:
   group: update-gloss-cask-${{ inputs.release_tag }}
@@ -189,13 +189,25 @@ jobs:
             git push origin "HEAD:refs/heads/$branch"
           fi
           validation_sha="$(git rev-parse HEAD)"
-          gh api \
-            --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$validation_sha" \
-            --raw-field state=success \
-            --raw-field context="Cask validation" \
-            --raw-field description="Release, checksums, manifest, cask, and Homebrew style verified" \
-            --raw-field target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          validation_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          jq -n \
+            --arg head_sha "$validation_sha" \
+            --arg details_url "$validation_url" \
+            '{
+              name: "Cask validation",
+              head_sha: $head_sha,
+              status: "completed",
+              conclusion: "success",
+              details_url: $details_url,
+              output: {
+                title: "Gloss cask validation passed",
+                summary: "Release immutability, attestations, checksums, manifest, cask, and Homebrew style verified."
+              }
+            }' \
+            | gh api \
+                --method POST \
+                "repos/$GITHUB_REPOSITORY/check-runs" \
+                --input -
 
           body="$RUNNER_TEMP/cask-pr-body.md"
           {

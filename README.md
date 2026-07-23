@@ -43,10 +43,17 @@ Apple silicon and Intel archives plus their published metadata, and verifies:
 - the cask is valid Ruby syntax.
 
 After validation, the workflow updates an `automation/gloss-*` branch and opens
-or refreshes a pull request. It records `Cask validation` on the exact pushed
-commit. `main` requires that status, an up-to-date branch, and one approving
-review; stale approvals are dismissed. The workflow never writes a new cask
-directly to `main`.
+or refreshes a pull request. It creates a `Cask validation` GitHub Actions check
+run on the exact pushed commit. `main` requires that check, an up-to-date branch,
+and one approving review; stale approvals are dismissed. The workflow never
+writes a new cask directly to `main`.
+
+Each cask pull request also performs real installs on Apple silicon and Intel
+GitHub-hosted runners from the checked-out tap. After merge, the same smoke test
+uses the public `brew install --cask sunchj/tap/gloss` command. Both jobs verify
+the installed architecture, ad-hoc signature, quarantine state, and launch,
+then uninstall Gloss. Until the first cask exists, these install steps safely
+skip.
 
 Repository settings must allow GitHub Actions to create pull requests. The
 workflow uses only this repository's short-lived `GITHUB_TOKEN`.
