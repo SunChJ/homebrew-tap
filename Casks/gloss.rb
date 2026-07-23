@@ -1,15 +1,15 @@
 cask "gloss" do
-  version "0.8.0"
+  version "0.8.1"
 
   on_arm do
-    sha256 "8cf234b760e33df9b6cb104d7af257887fe06b0b2c43ade0784e7cefe262b33a"
+    sha256 "19fa355023180a3d364b7a146d583daed4127c4b368c3dbbea7de42f8e321a24"
 
-    url "https://github.com/SunChJ/gloss-releases/releases/download/v0.8.0/Gloss-macos-arm64.zip"
+    url "https://github.com/SunChJ/gloss-releases/releases/download/v0.8.1/Gloss-macos-arm64.zip"
   end
   on_intel do
-    sha256 "953c74ce2e4ce863ce09dcf9a88827ade1e7b0e1da604cdf287a30b69c5ec544"
+    sha256 "568d2293b77fc150e986b7ad33ee3bea4a8034650af6464a7d169142f1231e44"
 
-    url "https://github.com/SunChJ/gloss-releases/releases/download/v0.8.0/Gloss-macos-x86_64.zip"
+    url "https://github.com/SunChJ/gloss-releases/releases/download/v0.8.1/Gloss-macos-x86_64.zip"
   end
 
   name "Gloss"
