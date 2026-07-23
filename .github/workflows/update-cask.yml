@@ -1,0 +1,210 @@
+name: Update Gloss cask
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Public Gloss release tag, for example v0.8.0
+        required: true
+        type: string
+      release_repository:
+        description: Fixed public binary release repository
+        required: true
+        default: SunChJ/gloss-releases
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-gloss-cask-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_REPOSITORY: SunChJ/gloss-releases
+  REQUESTED_RELEASE_REPOSITORY: ${{ inputs.release_repository }}
+  RELEASE_TAG: ${{ inputs.release_tag }}
+
+jobs:
+  update:
+    name: Verify release and propose cask
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Download public release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+(\.[0-9]+){2}([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 65
+          fi
+          if [[ "$REQUESTED_RELEASE_REPOSITORY" != "$RELEASE_REPOSITORY" ]]; then
+            echo "Unsupported release repository: $REQUESTED_RELEASE_REPOSITORY" >&2
+            exit 65
+          fi
+
+          release_directory="$RUNNER_TEMP/gloss-release"
+          mkdir -p "$release_directory"
+          gh release download "$RELEASE_TAG" \
+            --repo "$RELEASE_REPOSITORY" \
+            --dir "$release_directory" \
+            --pattern "Gloss-macos-arm64.zip" \
+            --pattern "Gloss-macos-x86_64.zip" \
+            --pattern "SHA256SUMS" \
+            --pattern "gloss-release-manifest.json" \
+            --pattern "gloss.rb"
+
+          for asset in \
+            Gloss-macos-arm64.zip \
+            Gloss-macos-x86_64.zip \
+            SHA256SUMS \
+            gloss-release-manifest.json \
+            gloss.rb; do
+            test -f "$release_directory/$asset"
+          done
+
+      - name: Verify release checksums
+        id: checksums
+        run: |
+          set -euo pipefail
+          release_directory="$RUNNER_TEMP/gloss-release"
+          checksums="$release_directory/SHA256SUMS"
+
+          verify_asset() {
+            local asset="$1"
+            local output_name="$2"
+            local matches
+            local expected
+            local actual
+
+            matches="$(
+              awk -v filename="$asset" \
+                '$2 == filename && $1 ~ /^[0-9a-fA-F]{64}$/ { print tolower($1) }' \
+                "$checksums"
+            )"
+            if [[ "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)" -ne 1 ]]; then
+              echo "Expected exactly one valid checksum for $asset." >&2
+              exit 1
+            fi
+            expected="$matches"
+            actual="$(shasum -a 256 "$release_directory/$asset" | awk '{ print $1 }')"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Checksum mismatch for $asset." >&2
+              exit 1
+            fi
+            printf '%s=%s\n' "$output_name" "$actual" >>"$GITHUB_OUTPUT"
+          }
+
+          verify_asset "Gloss-macos-arm64.zip" "arm64"
+          verify_asset "Gloss-macos-x86_64.zip" "x86_64"
+          verify_asset "gloss-release-manifest.json" "manifest"
+
+      - name: Validate generated cask
+        env:
+          ARM64_SHA256: ${{ steps.checksums.outputs.arm64 }}
+          X86_64_SHA256: ${{ steps.checksums.outputs.x86_64 }}
+        run: |
+          set -euo pipefail
+          release_directory="$RUNNER_TEMP/gloss-release"
+          cask="$release_directory/gloss.rb"
+          ruby -c "$cask"
+          python3 Scripts/validate_gloss_release.py \
+            --cask "$cask" \
+            --manifest "$release_directory/gloss-release-manifest.json" \
+            --release-tag "$RELEASE_TAG" \
+            --repository "$RELEASE_REPOSITORY" \
+            --arm64-archive "$release_directory/Gloss-macos-arm64.zip" \
+            --arm64-sha256 "$ARM64_SHA256" \
+            --x86-64-archive "$release_directory/Gloss-macos-x86_64.zip" \
+            --x86-64-sha256 "$X86_64_SHA256"
+
+          brew tap sunchj/tap "$GITHUB_WORKSPACE"
+          tap_path="$(brew --repository sunchj/tap)"
+          install -d "$tap_path/Casks"
+          install -m 0644 "$cask" "$tap_path/Casks/gloss.rb"
+          brew style --cask sunchj/tap/gloss
+
+          base_url="https://github.com/$RELEASE_REPOSITORY/releases/download/$RELEASE_TAG"
+          for archive in Gloss-macos-arm64.zip Gloss-macos-x86_64.zip; do
+            curl \
+              --fail \
+              --head \
+              --location \
+              --retry 3 \
+              --silent \
+              --show-error \
+              "$base_url/$archive" >/dev/null
+          done
+
+      - name: Create or update cask pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          branch_version="$(printf '%s' "$version" | tr '+_' '--')"
+          branch="automation/gloss-$branch_version"
+          cask_source="$RUNNER_TEMP/gloss-release/gloss.rb"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          install -d Casks
+          install -m 0644 "$cask_source" Casks/gloss.rb
+          git add Casks/gloss.rb
+
+          if git diff --cached --quiet; then
+            echo "Casks/gloss.rb already matches $RELEASE_TAG; nothing to propose."
+            exit 0
+          fi
+
+          git commit -m "Update Gloss cask to $version"
+          remote_ref="$RUNNER_TEMP/automation-remote-ref"
+          if git ls-remote --exit-code --heads origin "$branch" >"$remote_ref"; then
+            remote_sha="$(awk '{ print $1 }' "$remote_ref")"
+            git push \
+              --force-with-lease="refs/heads/$branch:$remote_sha" \
+              origin "HEAD:refs/heads/$branch"
+          else
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+
+          body="$RUNNER_TEMP/cask-pr-body.md"
+          {
+            echo "Updates \`Casks/gloss.rb\` from the public \`$RELEASE_TAG\` release."
+            echo
+            echo "Validated:"
+            echo
+            echo "- arm64 and x86_64 archives match \`SHA256SUMS\`"
+            echo "- release manifest and cask match the downloaded archives"
+            echo "- cask URLs point to anonymous public release assets"
+            echo "- Homebrew style and Ruby syntax checks pass"
+          } >"$body"
+
+          pull_request="$(
+            gh pr list \
+              --base main \
+              --head "$branch" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+          if [[ -n "$pull_request" ]]; then
+            gh pr edit "$pull_request" \
+              --title "Update Gloss cask to $version" \
+              --body-file "$body"
+          else
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "Update Gloss cask to $version" \
+              --body-file "$body"
+          fi
