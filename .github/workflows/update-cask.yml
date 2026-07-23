@@ -16,6 +16,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  statuses: write
 
 concurrency:
   group: update-gloss-cask-${{ inputs.release_tag }}
@@ -50,6 +51,17 @@ jobs:
             echo "Unsupported release repository: $REQUESTED_RELEASE_REPOSITORY" >&2
             exit 65
           fi
+          release_is_immutable="$(
+            gh release view "$RELEASE_TAG" \
+              --repo "$RELEASE_REPOSITORY" \
+              --json isImmutable \
+              --jq '.isImmutable'
+          )"
+          if [[ "$release_is_immutable" != "true" ]]; then
+            echo "Release $RELEASE_TAG is not protected by GitHub release immutability." >&2
+            exit 1
+          fi
+          gh release verify "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY"
 
           release_directory="$RUNNER_TEMP/gloss-release"
           mkdir -p "$release_directory"
@@ -176,6 +188,14 @@ jobs:
           else
             git push origin "HEAD:refs/heads/$branch"
           fi
+          validation_sha="$(git rev-parse HEAD)"
+          gh api \
+            --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$validation_sha" \
+            --raw-field state=success \
+            --raw-field context="Cask validation" \
+            --raw-field description="Release, checksums, manifest, cask, and Homebrew style verified" \
+            --raw-field target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
           body="$RUNNER_TEMP/cask-pr-body.md"
           {
@@ -186,6 +206,7 @@ jobs:
             echo "- arm64 and x86_64 archives match \`SHA256SUMS\`"
             echo "- release manifest and cask match the downloaded archives"
             echo "- cask URLs point to anonymous public release assets"
+            echo "- GitHub release immutability and release attestation are valid"
             echo "- Homebrew style and Ruby syntax checks pass"
           } >"$body"
 

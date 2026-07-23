@@ -33,6 +33,7 @@ The `Update Gloss cask` workflow accepts a public release tag, downloads the
 Apple silicon and Intel archives plus their published metadata, and verifies:
 
 - both archive SHA-256 values against `SHA256SUMS`;
+- GitHub release immutability and the release attestation;
 - the cask version and architecture-specific checksums;
 - both cask URLs exactly match anonymous public assets for that release;
 - the complete cask matches the reviewed deterministic template, with no extra
@@ -42,7 +43,10 @@ Apple silicon and Intel archives plus their published metadata, and verifies:
 - the cask is valid Ruby syntax.
 
 After validation, the workflow updates an `automation/gloss-*` branch and opens
-or refreshes a pull request. It never writes a new cask directly to `main`.
+or refreshes a pull request. It records `Cask validation` on the exact pushed
+commit. `main` requires that status, an up-to-date branch, and one approving
+review; stale approvals are dismissed. The workflow never writes a new cask
+directly to `main`.
 
 Repository settings must allow GitHub Actions to create pull requests. The
 workflow uses only this repository's short-lived `GITHUB_TOKEN`.
